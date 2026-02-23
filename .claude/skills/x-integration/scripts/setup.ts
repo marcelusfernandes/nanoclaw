@@ -3,19 +3,27 @@
  * X Integration - Authentication Setup
  * Usage: npx tsx setup.ts
  *
- * Interactive script - opens browser for manual login
+ * On headless servers: launches Chrome with remote debugging on port 9222.
+ * User connects via SSH tunnel to log in from their local browser.
+ *
+ * On desktop: opens Chrome window directly for manual login.
  */
 
 import { chromium } from 'playwright';
+import { execSync } from 'child_process';
 import * as readline from 'readline';
 import fs from 'fs';
 import path from 'path';
 import { config, cleanupLockFiles } from '../lib/browser.js';
 
+const REMOTE_DEBUG_PORT = 9222;
+
+function isHeadless(): boolean {
+  return !process.env.DISPLAY;
+}
+
 async function setup(): Promise<void> {
   console.log('=== X (Twitter) Authentication Setup ===\n');
-  console.log('This will open Chrome for you to log in to X.');
-  console.log('Your login session will be saved for automated interactions.\n');
   console.log(`Chrome path: ${config.chromePath}`);
   console.log(`Profile dir: ${config.browserDataDir}\n`);
 
@@ -25,57 +33,88 @@ async function setup(): Promise<void> {
 
   cleanupLockFiles();
 
+  const headless = isHeadless();
+
+  // On headless servers, start Xvfb
+  if (headless) {
+    const display = ':99';
+    try {
+      execSync(`Xvfb ${display} -screen 0 1280x800x24 &`, { stdio: 'ignore' });
+      process.env.DISPLAY = display;
+      await new Promise(r => setTimeout(r, 500));
+    } catch {
+      process.env.DISPLAY = display;
+    }
+  }
+
+  const args = [
+    ...config.chromeArgs.slice(0, 3),
+    `--remote-debugging-port=${REMOTE_DEBUG_PORT}`,
+  ];
+
   console.log('Launching browser...\n');
 
   const context = await chromium.launchPersistentContext(config.browserDataDir, {
     executablePath: config.chromePath,
     headless: false,
     viewport: config.viewport,
-    args: config.chromeArgs.slice(0, 3), // Use first 3 args for setup (less restrictive)
+    args,
     ignoreDefaultArgs: config.chromeIgnoreDefaultArgs,
   });
 
   const page = context.pages()[0] || await context.newPage();
-
-  // Navigate to login page
   await page.goto('https://x.com/login');
 
-  console.log('Please log in to X in the browser window.');
-  console.log('After you see your home feed, come back here and press Enter.\n');
+  if (headless) {
+    console.log('=== REMOTE LOGIN ===');
+    console.log('O Chrome está rodando na VPS com remote debugging na porta 9222.');
+    console.log('');
+    console.log('No seu computador local, rode:');
+    console.log(`  ssh -L 9222:localhost:9222 ${process.env.USER}@<IP_DA_VPS>`);
+    console.log('');
+    console.log('Depois abra no seu navegador local:');
+    console.log('  http://localhost:9222');
+    console.log('');
+    console.log('Clique no link da página do X para controlar o Chrome remoto.');
+    console.log('Faça login no X normalmente.');
+    console.log('');
+  } else {
+    console.log('Please log in to X in the browser window.');
+  }
 
-  // Wait for user to complete login
+  console.log('Depois de fazer login e ver o feed, volte aqui e pressione Enter.\n');
+
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout
   });
 
   await new Promise<void>(resolve => {
-    rl.question('Press Enter when logged in... ', () => {
+    rl.question('Pressione Enter quando estiver logado... ', () => {
       rl.close();
       resolve();
     });
   });
 
-  // Verify login by navigating to home and checking for account button
-  console.log('\nVerifying login status...');
+  // Verify login
+  console.log('\nVerificando login...');
   await page.goto('https://x.com/home');
   await page.waitForTimeout(config.timeouts.pageLoad);
 
   const isLoggedIn = await page.locator('[data-testid="SideNav_AccountSwitcher_Button"]').isVisible().catch(() => false);
 
   if (isLoggedIn) {
-    // Save auth marker
     fs.writeFileSync(config.authPath, JSON.stringify({
       authenticated: true,
       timestamp: new Date().toISOString()
     }, null, 2));
 
-    console.log('\n✅ Authentication successful!');
-    console.log(`Session saved to: ${config.browserDataDir}`);
-    console.log('\nYou can now use X integration features.');
+    console.log('\n✅ Autenticação concluída!');
+    console.log(`Sessão salva em: ${config.browserDataDir}`);
+    console.log('\nVocê pode usar as funcionalidades do X agora.');
   } else {
-    console.log('\n❌ Could not verify login status.');
-    console.log('Please try again and make sure you are logged in to X.');
+    console.log('\n❌ Não foi possível verificar o login.');
+    console.log('Tente novamente e certifique-se de estar logado no X.');
   }
 
   await context.close();

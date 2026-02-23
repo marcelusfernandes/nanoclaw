@@ -68,7 +68,15 @@ export function validateContent(content: string | undefined, type = 'Tweet'): Sc
 }
 
 /**
- * Get browser context with persistent profile
+ * Check if running in a headless environment (no DISPLAY)
+ */
+function isHeadless(): boolean {
+  return !process.env.DISPLAY;
+}
+
+/**
+ * Get browser context with persistent profile.
+ * On headless servers, uses Xvfb virtual display automatically.
  */
 export async function getBrowserContext(): Promise<BrowserContext> {
   if (!fs.existsSync(config.authPath)) {
@@ -76,6 +84,21 @@ export async function getBrowserContext(): Promise<BrowserContext> {
   }
 
   cleanupLockFiles();
+
+  // On headless servers, start Xvfb if no DISPLAY is set
+  if (isHeadless()) {
+    const { execSync } = await import('child_process');
+    const display = ':99';
+    try {
+      execSync(`Xvfb ${display} -screen 0 1280x800x24 &`, { stdio: 'ignore' });
+      process.env.DISPLAY = display;
+      // Give Xvfb a moment to start
+      await new Promise(r => setTimeout(r, 500));
+    } catch {
+      // Xvfb may already be running
+      process.env.DISPLAY = display;
+    }
+  }
 
   const context = await chromium.launchPersistentContext(config.browserDataDir, {
     executablePath: config.chromePath,
